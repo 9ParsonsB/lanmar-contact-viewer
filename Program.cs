@@ -1,4 +1,5 @@
 using Lamar.Microsoft.DependencyInjection;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using WebApi;
@@ -17,6 +18,13 @@ builder.Host.UseLamar((_, registry) => registry.Scan(scan =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<ContactDbContext>();
+builder.Services.AddReverseProxy().LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(new CorsPolicy()
+        { Origins = { "http://localhost:7231" }, Headers = { "*" }, Methods = { "*" } });
+});
 
 var app = builder.Build();
 
@@ -33,24 +41,44 @@ app.UseHttpsRedirection();
 // TODO: Auth
 // TODO: Web Security
 // TODO: Dont use Domain Models as API Models
-app.MapGet("/", async ([FromServices] ContactDbContext db, string query = "") => await db.Contacts.Where(c => EF.Functions.Like(c.FirstName.Trim(), $"%{query}%") ||
+
+app.MapGet("/api", async ([FromServices] ContactDbContext db, string query = "") => await db.Contacts.Where(c => EF.Functions.Like(c.FirstName.Trim(), $"%{query}%") ||
     EF.Functions.Like(c.LastName.Trim(), $"%{query}%") ||
     EF.Functions.Like(c.Company.Trim(), $"%{query}%") ||
     EF.Functions.Like(c.Email.Trim(), $"%{query}%")
     ).AsNoTracking().ToListAsync());
-app.MapGet("/{id:guid}", async ([FromServices] ContactDbContext db, Guid id) => await db.Contacts.FindAsync(id));
-app.MapPost("/", async ([FromServices] ContactDbContext db, Contact contact) =>
+
+app.MapGet("/api/{id:guid}", async ([FromServices] ContactDbContext db, Guid id) =>
 {
-    contact.Id = Guid.NewGuid();    
+    var result = await db.Contacts.FindAsync(id); 
+    return result == null ? Results.NotFound() : Results.Ok(result);
+});
+
+app.MapPost("/api", async ([FromServices] ContactDbContext db, [FromBody] ContactModel c) =>
+{
+    var contact = new Contact()
+    {
+        Id = Guid.NewGuid(),  
+        FirstName = c.FirstName,
+        LastName = c.LastName,
+        Company = c.Company,
+        Email = c.Email,
+        Phone = c.Phone
+    };
     await db.Contacts.AddAsync(contact);
     await db.SaveChangesAsync();
-    return contact.Id;
+    return Results.Created();
 });
-app.MapPut("/", async ([FromServices] ContactDbContext db, Contact contact) =>
+
+app.MapPut("/api", async ([FromServices] ContactDbContext db, [FromBody] Contact contact) =>
 {
     db.Entry(contact).State = EntityState.Modified;
     await db.SaveChangesAsync();
+    return Results.Accepted();
 });
+
+app.MapReverseProxy();
+
 
 await app.Services.GetRequiredService<ContactDbContext>().Database.EnsureCreatedAsync();
 
